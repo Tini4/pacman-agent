@@ -1,4 +1,9 @@
+.venv/
 venv/
 __pycache__/
+
+.idea/
+pacman-contest/
+
 *.pyc
 .evn

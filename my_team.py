@@ -1,29 +1,20 @@
-# my_team.py
-# ---------------
-# Licensing Information: Please do not distribute or publish solutions to this
-# project. You are free to use and extend these projects for educational
-# purposes. The Pacman AI projects were developed at UC Berkeley, primarily by
-# John DeNero (denero@cs.berkeley.edu) and Dan Klein (klein@cs.berkeley.edu).
-# For more info, see http://inst.eecs.berkeley.edu/~cs188/sp09/pacman.html
+# coding=utf-8
+"""My team"""
 
 import random
-import contest.util as util
+from typing import List
 
-from contest.capture_agents import CaptureAgent
-from contest.game import Directions
-from contest.util import nearest_point
+import contest.util as util  # type: ignore
+from contest.capture_agents import CaptureAgent  # type: ignore
+from contest.game import Directions  # type: ignore
+from contest.util import nearest_point  # type: ignore
 
 
-#################
-# Team creation #
-#################
-
-def create_team(first_index, second_index, is_red,
-                first='OffensiveReflexAgent', second='DefensiveReflexAgent', num_training=0):
+def create_team(first_index: int, second_index: int, is_red: bool, **_kwargs) -> List[CaptureAgent]:
     """
     This function should return a list of two agents that will form the
     team, initialized using firstIndex and secondIndex as their agent
-    index numbers.  isRed is True if the red team is being created, and
+    index numbers. isRed is True if the red team is being created, and
     will be False if the blue team is being created.
 
     As a potentially helpful development aid, this function can take
@@ -34,12 +25,8 @@ def create_team(first_index, second_index, is_red,
     any extra arguments, so you should make sure that the default
     behavior is what you want for the nightly contest.
     """
-    return [eval(first)(first_index), eval(second)(second_index)]
+    return [OffensiveReflexAgent(first_index), DefensiveReflexAgent(second_index)]
 
-
-##########
-# Agents #
-##########
 
 class ReflexCaptureAgent(CaptureAgent):
     """
@@ -115,18 +102,18 @@ class ReflexCaptureAgent(CaptureAgent):
 
     def get_weights(self, game_state, action):
         """
-        Normally, weights do not depend on the game state.  They can be either
-        a counter or a dictionary.
+        Normally, weights do not depend on the game state.
+        They can be either a counter or a dictionary.
         """
         return {'successor_score': 1.0}
 
 
 class OffensiveReflexAgent(ReflexCaptureAgent):
     """
-  A reflex agent that seeks food. This is an agent
-  we give you to get an idea of what an offensive agent might look like,
-  but it is by no means the best or only way to build an offensive agent.
-  """
+    A reflex agent that seeks food. This is an agent
+    we give you to get an idea of what an offensive agent might look like,
+    but it is by no means the best or only way to build an offensive agent.
+    """
 
     def get_features(self, game_state, action):
         features = util.Counter()
@@ -136,7 +123,7 @@ class OffensiveReflexAgent(ReflexCaptureAgent):
 
         # Compute distance to the nearest food
 
-        if len(food_list) > 0:  # This should always be True,  but better safe than sorry
+        if len(food_list) > 0:  # This should always be True, but better safe than sorry
             my_pos = successor.get_agent_state(self.index).get_position()
             min_distance = min([self.get_maze_distance(my_pos, food) for food in food_list])
             features['distance_to_food'] = min_distance
@@ -150,7 +137,7 @@ class DefensiveReflexAgent(ReflexCaptureAgent):
     """
     A reflex agent that keeps its side Pacman-free. Again,
     this is to give you an idea of what a defensive agent
-    could be like.  It is not the best or only way to make
+    could be like. It is not the best or only way to make
     such an agent.
     """
 
