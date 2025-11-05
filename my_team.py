@@ -28,12 +28,29 @@ def create_team(first_index: int, second_index: int, is_red: bool, **_kwargs) ->
     return [OffensiveReflexAgent(first_index), DefensiveReflexAgent(second_index)]
 
 
+class GameBoard:
+    DISTS: List[List[int]]
+
+    def __init__(self):
+        # TODO: calc distances between all fields
+        # TODO: initialize starting positions for players
+        ...
+
+    def tick(self, ix: int):
+        # TODO: move player and enemy positions
+        ...
+
+
+class Agent(CaptureAgent):
+    ...
+
+
 class ReflexCaptureAgent(CaptureAgent):
     """
     A base class for reflex agents that choose score-maximizing actions
     """
 
-    def __init__(self, index, time_for_computing=.1):
+    def __init__(self, index, time_for_computing=.9):
         super().__init__(index, time_for_computing)
         self.start = None
 
