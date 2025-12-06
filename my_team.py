@@ -5,6 +5,9 @@ import random
 from time import perf_counter
 from typing import List, Callable, Tuple, Set
 
+# TODO: REMOVE!!!!!
+import matplotlib.pyplot as plt  # type: ignore
+
 import contest.util as util  # type: ignore
 from contest.capture import GameState  # type: ignore
 from contest.capture_agents import CaptureAgent  # type: ignore
@@ -75,8 +78,8 @@ class GameBoard:
         """Initializes the game board"""
         self.DISTS: List[List[List[List[int]]]] = []
         self.player_positions: List[List[Set[int]]] = []
-        self.my_index: Tuple[int, int] = (-1, -1)
-        self.enemy_index: Tuple[int, int] = (-1, -1)
+        self.my_indexes: Tuple[int, int] = (-1, -1)
+        self.enemy_indexes: Tuple[int, int] = (-1, -1)
 
         self.is_red = is_red
 
@@ -89,11 +92,11 @@ class GameBoard:
         walls: Grid = layout.walls
 
         if self.is_red:
-            self.my_index = tuple(gs.red_team)
-            self.enemy_index = tuple(gs.blue_team)
+            self.my_indexes = tuple(gs.red_team)
+            self.enemy_indexes = tuple(gs.blue_team)
         else:
-            self.my_index = tuple(gs.blue_team)
-            self.enemy_index = tuple(gs.red_team)
+            self.my_indexes = tuple(gs.blue_team)
+            self.enemy_indexes = tuple(gs.red_team)
 
         self.DISTS = self.floyd_warshall(walls)
 
@@ -181,6 +184,50 @@ class GameBoard:
     @Timer('tick')
     def tick(self, ix: int, gs: GameState) -> None:
         """Game board tick"""
+        self.move_players(ix, gs)
+
+    def draw_player_positions(self, gs: GameState) -> None:
+        """Draw player positions"""
+        data: GameStateData = gs.data
+        layout: Layout = data.layout
+        walls: Grid = layout.walls
+
+        width, height = walls.width, walls.height
+        colors = ['red', 'blue', 'green', 'orange']  # one per agent
+
+        fig, ax = plt.subplots(figsize=(width / 2, height / 2))
+
+        # Draw walls
+        for x in range(width):
+            for y in range(height):
+                if walls.data[x][y]:
+                    ax.add_patch(plt.Rectangle((x, y), 1, 1, color='black'))
+
+        # Draw agents
+        for x in range(width):
+            for y in range(height):
+                agents_here = list(self.player_positions[x][y])
+                n = len(agents_here)
+                if n == 0:
+                    continue
+
+                # Slight offsets to avoid overlap
+                offsets = [(0, 0), (-0.2, 0.2), (0.2, 0.2), (-0.2, -0.2)]
+                for i, agent in enumerate(agents_here):
+                    dx, dy = offsets[i % 4]
+                    ax.scatter(x + 0.5 + dx, y + 0.5 + dy,
+                               c=colors[agent], s=200, edgecolors='black', zorder=5)
+
+        ax.set_xlim(0, width)
+        ax.set_ylim(0, height)
+        ax.set_xticks(range(width))
+        ax.set_yticks(range(height))
+        ax.set_aspect('equal')
+        ax.grid(True)
+        plt.show()
+
+    def move_players(self, ix: int, gs: GameState) -> None:
+        """Move players"""
         data: GameStateData = gs.data
         agent_states: List[AgentState] = data.agent_states
         walls: Grid = data.layout.walls
@@ -240,9 +287,23 @@ class GameBoard:
                 # Add the new positions
                 self.player_positions[x][y].update(new_positions[x][y])
 
+        # -------------------------------------------------
+        # 5. Remove enemy from wrong halve
+        # -------------------------------------------------
+        mid = walls.width // 2
         if enemy_state.is_pacman:
-            mid = walls.width // 2
-
+            # Determine your home half
+            if self.is_red:
+                # Red home = left half (0 ... mid-1)
+                for x in range(mid, walls.width):
+                    for y in range(walls.height):
+                        self.player_positions[x][y].discard(enemy_ix)
+            else:
+                # Blue home = right half (mid ... width-1)
+                for x in range(0, mid):
+                    for y in range(walls.height):
+                        self.player_positions[x][y].discard(enemy_ix)
+        else:
             # Determine your home half
             if self.is_red:
                 # Red home = left half (0 ... mid-1)
@@ -254,6 +315,27 @@ class GameBoard:
                 for x in range(mid, walls.width):
                     for y in range(walls.height):
                         self.player_positions[x][y].discard(enemy_ix)
+
+        # -------------------------------------------------
+        # 6. Remove enemy from cells around friendly agents
+        # -------------------------------------------------
+        SAFE_RADIUS = 5  # Manhattan distance radius around friendly agents
+
+        for friendly_ix in self.my_indexes:  # iterate over all friendly agents
+            friendly_state = agent_states[friendly_ix]
+            f_x, f_y = map(round, friendly_state.configuration.pos)
+
+            # remove enemy_ix from all cells within SAFE_RADIUS
+            for d_x in range(-SAFE_RADIUS, SAFE_RADIUS + 1):
+                for d_y in range(-SAFE_RADIUS, SAFE_RADIUS + 1):
+                    if abs(d_x) + abs(d_y) <= SAFE_RADIUS:  # Manhattan distance
+                        n_x, n_y = f_x + d_x, f_y + d_y
+                        if 0 <= n_x < walls.width and 0 <= n_y < walls.height:
+                            self.player_positions[n_x][n_y].discard(enemy_ix)
+
+        # TODO: ideas
+        #     If enemy eats food, do we know where it is?
+        #     Also if enemy eats capsule?
 
 
 class TiTAgent(CaptureAgent):
