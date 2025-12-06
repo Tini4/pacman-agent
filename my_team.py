@@ -2,12 +2,50 @@
 """My team"""
 
 import random
-from typing import List
+from time import perf_counter
+from typing import List, Callable, Tuple, Set
 
 import contest.util as util  # type: ignore
+from contest.capture import GameState  # type: ignore
 from contest.capture_agents import CaptureAgent  # type: ignore
-from contest.game import Directions  # type: ignore
+from contest.game import Directions, GameStateData, Grid, AgentState, Configuration  # type: ignore
+from contest.layout import Layout  # type: ignore
 from contest.util import nearest_point  # type: ignore
+
+
+class Timer:
+    """
+    A context manager and decorator for timing the execution of blocks of code or functions.
+    """
+
+    def __init__(self, name: str = 'Timer'):
+        """Initializes the Timer object with a name."""
+
+        self.name = name
+
+    def __enter__(self) -> 'Timer':
+        """Starts the timer."""
+
+        self._ts = perf_counter()
+
+        return self
+
+    def __exit__(self, *_exc) -> None:
+        """Stops the timer and prints the elapsed time."""
+
+        te = perf_counter()
+
+        print(f'{self.name}{" " if self.name else ""}took {te - self._ts:.3f} seconds')
+
+    def __call__(self, f: Callable) -> Callable:
+        """Decorates a function to measure its execution time."""
+
+        def wrapper(*args, **kwargs) -> Callable:
+            """Wrapper function."""
+            with self:
+                return f(*args, **kwargs)
+
+        return wrapper
 
 
 def create_team(first_index: int, second_index: int, is_red: bool, **_kwargs) -> List[CaptureAgent]:
@@ -25,24 +63,225 @@ def create_team(first_index: int, second_index: int, is_red: bool, **_kwargs) ->
     any extra arguments, so you should make sure that the default
     behavior is what you want for the nightly contest.
     """
-    return [OffensiveReflexAgent(first_index), DefensiveReflexAgent(second_index)]
+    gb = GameBoard(is_red)
+
+    return [TiTAgent(first_index, gb), TiTAgent(second_index, gb)]
 
 
 class GameBoard:
-    DISTS: List[List[int]]
+    """Game board class"""
 
-    def __init__(self):
-        # TODO: calc distances between all fields
-        # TODO: initialize starting positions for players
-        ...
+    def __init__(self, is_red: bool) -> None:
+        """Initializes the game board"""
+        self.DISTS: List[List[List[List[int]]]] = []
+        self.player_positions: List[List[Set[int]]] = []
+        self.my_index: Tuple[int, int] = (-1, -1)
+        self.enemy_index: Tuple[int, int] = (-1, -1)
 
-    def tick(self, ix: int):
-        # TODO: move player and enemy positions
-        ...
+        self.is_red = is_red
+
+    @Timer('setup')
+    def setup(self, gs: GameState) -> None:
+        """Game board setup"""
+        data: GameStateData = gs.data
+        agent_states: List[AgentState] = data.agent_states
+        layout: Layout = data.layout
+        walls: Grid = layout.walls
+
+        if self.is_red:
+            self.my_index = tuple(gs.red_team)
+            self.enemy_index = tuple(gs.blue_team)
+        else:
+            self.my_index = tuple(gs.blue_team)
+            self.enemy_index = tuple(gs.red_team)
+
+        self.DISTS = self.floyd_warshall(walls)
+
+        self.player_positions = [[set() for _ in range(layout.height)] for _ in range(layout.width)]
+        for i in range(4):
+            p = agent_states[i].start.pos
+            self.player_positions[p[0]][p[1]].add(i)
+
+    @Timer('Floyd-Warshall')
+    def floyd_warshall(self, walls: Grid) -> List[List[List[List[int]]]]:
+        """Floyd-Warshall algorithm"""
+        width = walls.width
+        height = walls.height
+        grid = walls.data
+
+        N: int = width * height
+        INF: int = 10 ** 9
+
+        def idx(_x: int, _y: int) -> int:
+            """Helper to translate coordinates to linear index"""
+            return _y * width + _x
+
+        # ----------------------------
+        # STEP 1: Build flat N×N matrix
+        # ----------------------------
+
+        dist = [[INF] * N for _ in range(N)]
+
+        for y in range(height):
+            for x in range(width):
+                if grid[x][y]:
+                    continue
+                i = idx(x, y)
+                dist[i][i] = 0
+
+                for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                    nx, ny = x + dx, y + dy
+                    if 0 <= nx < width and 0 <= ny < height and not grid[nx][ny]:
+                        dist[i][idx(nx, ny)] = 1
+
+        # ----------------------------------
+        # STEP 2: Optimized Floyd–Warshall
+        # ----------------------------------
+
+        for k in range(N):
+            dk = dist[k]
+            for i in range(N):
+                di = dist[i]
+                via = di[k]
+                if via == INF:
+                    continue
+
+                # Use local var lookup (fastest)
+                for j in range(N):
+                    alt = via + dk[j]
+                    if alt < di[j]:
+                        di[j] = alt
+
+        # Replace INF with -1
+        for i in range(N):
+            row = dist[i]
+            for j in range(N):
+                if row[j] == INF:
+                    row[j] = -1
+
+        # ---------------------------------------
+        # STEP 3: Convert N×N → 4-D distance grid
+        # ---------------------------------------
+
+        # Pre-allocate 4D structure
+        d4 = [[[[0] * height for _ in range(width)] for _ in range(height)] for _ in range(width)]
+
+        for y1 in range(height):
+            for x1 in range(width):
+                i = idx(x1, y1)
+                row = dist[i]
+                for y2 in range(height):
+                    base = y2 * width
+                    # slice assignment is fast:
+                    for x2 in range(width):
+                        d4[x1][y1][x2][y2] = row[base + x2]
+
+        return d4
+
+    @Timer('tick')
+    def tick(self, ix: int, gs: GameState) -> None:
+        """Game board tick"""
+        data: GameStateData = gs.data
+        agent_states: List[AgentState] = data.agent_states
+        walls: Grid = data.layout.walls
+
+        # ------------------------------------------------------
+        # 1. Move *your own agent* to its exact observed position
+        # ------------------------------------------------------
+        my_state = agent_states[ix]
+        my_x, my_y = map(round, my_state.configuration.pos)  # (x,y)
+
+        # Remove you from every other square; place at exact position
+        for x in range(walls.width):
+            for y in range(walls.height):
+                self.player_positions[x][y].discard(ix)
+        self.player_positions[my_x][my_y].add(ix)
+
+        # -----------------------------------------------------------------------
+        # 2. Determine the enemy that moves BEFORE you (turn order relationship)
+        # -----------------------------------------------------------------------
+        enemy_ix = (ix - 1) % 4
+
+        # Get enemy’s current GameState position
+        enemy_state = agent_states[enemy_ix]
+        enemy_config: Configuration = enemy_state.configuration
+
+        # --------------------------------------------------------------
+        # 3. If you SEE the enemy, collapse to the exact known position
+        # --------------------------------------------------------------
+        if enemy_config is not None:
+            # exact collapse
+            e_x, e_y = map(round, enemy_config.pos)  # (x,y)
+            for x in range(walls.width):
+                for y in range(walls.height):
+                    self.player_positions[x][y].discard(enemy_ix)
+            self.player_positions[e_x][e_y].add(enemy_ix)
+
+            return
+
+        # --------------------------------------------------------------
+        # 4. If enemy NOT visible, propagate uncertainty
+        # --------------------------------------------------------------
+        new_positions: List[List[Set[int]]] = [[set() for _ in range(walls.height)] for _ in range(walls.width)]
+
+        for x in range(walls.width):
+            for y in range(walls.height):
+                if enemy_ix in self.player_positions[x][y]:
+                    # Expand to neighbors
+                    for d_x, d_y in [(0, 0), (1, 0), (-1, 0), (0, 1), (0, -1)]:
+                        n_x, n_y = x + d_x, y + d_y
+                        if 0 <= n_x < walls.width and 0 <= n_y < walls.height and not walls.data[n_x][n_y]:
+                            new_positions[n_x][n_y].add(enemy_ix)
+
+        # Update positions
+        # Keep other agents unchanged
+        for x in range(walls.width):
+            for y in range(walls.height):
+                # Add the new positions
+                self.player_positions[x][y].update(new_positions[x][y])
+
+        if enemy_state.is_pacman:
+            mid = walls.width // 2
+
+            # Determine your home half
+            if self.is_red:
+                # Red home = left half (0 ... mid-1)
+                for x in range(0, mid):
+                    for y in range(walls.height):
+                        self.player_positions[x][y].discard(enemy_ix)
+            else:
+                # Blue home = right half (mid ... width-1)
+                for x in range(mid, walls.width):
+                    for y in range(walls.height):
+                        self.player_positions[x][y].discard(enemy_ix)
 
 
-class Agent(CaptureAgent):
-    ...
+class TiTAgent(CaptureAgent):
+    def __init__(self, index: int, gb: GameBoard) -> None:
+        super().__init__(index, .9)
+
+        self.gameboard: GameBoard = gb
+
+    # @override
+    @Timer('register_initial_state')
+    def register_initial_state(self, gs: GameState) -> None:
+        if self.index < 2:
+            self.gameboard.setup(gs)
+
+        # TODO A*
+
+    # @override
+    @Timer('choose_action')
+    def choose_action(self, gs: GameState) -> str:
+        self.gameboard.tick(self.index, gs)
+
+        data: GameStateData = gs.data
+        agent_states: List[AgentState] = data.agent_states
+
+        for as_ in agent_states:
+            print(vars(as_))
+
+        return Directions.STOP
 
 
 class ReflexCaptureAgent(CaptureAgent):
