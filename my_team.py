@@ -1,7 +1,6 @@
 # coding=utf-8
 """My team"""
 
-import random
 from time import perf_counter
 from typing import List, Callable, Tuple, Set, Optional
 
@@ -385,7 +384,7 @@ class GameBoard:
                     if x >= mid:
                         cells.append((x, y))
 
-        if not self.is_red:
+        if not self.is_red:  # TODO: do something special with this!!!
             cells.extend(gs.get_red_capsules())
         else:
             cells.extend(gs.get_blue_capsules())
@@ -482,7 +481,7 @@ class TiTAgent(CaptureAgent):
         my_state = agent_states[self.index]
         self.position = tuple(map(round, my_state.configuration.pos))  # (x,y)
 
-        # TODO
+        # TODO?
         # if data.timeleft > self.gameboard.start - 120:
         #     return self.move_toward(gs, self.goal[0], self.goal[1])
 
@@ -555,7 +554,7 @@ class TiTAgent(CaptureAgent):
             # No food left, stay put
             return None
 
-        best_food = None
+        best_food: List[Tuple[int, int]] = []
         worst_risk = -INF  # risk = my distance - enemy distance
 
         for f_x, f_y in my_food_list:
@@ -565,21 +564,26 @@ class TiTAgent(CaptureAgent):
 
             if risk > worst_risk:
                 worst_risk = risk
-                best_food = (f_x, f_y)
+                best_food.clear()
 
-        return best_food
+            if risk == worst_risk:
+                best_food.append((f_x, f_y))
+
+        # TODO: if multiple are in danger, maybe stay put?
+        #  if not so in danger that risk is == 0 (just enough time to defend)
+
+        return best_food[0] if best_food else None
 
     def eat(self, gs: GameState) -> Optional[Tuple[int, int]]:
         """ TODO
-        Return a tile to attack an enemy if one is nearby on your half.
+        Return a tile to attack an enemy if one is next to you.
         Otherwise, return None.
         """
         data: GameStateData = gs.data
         agent_states: List[AgentState] = data.agent_states
 
-        walls: Grid = gs.data.layout.walls
-        width, height = walls.width, walls.height
-        mid = width // 2
+        layout: Layout = gs.data.layout
+        mid = layout.width // 2
         my_x, my_y = self.position
 
         # Check all enemy positions
