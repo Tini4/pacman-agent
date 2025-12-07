@@ -1,53 +1,11 @@
 # coding=utf-8
 """My team"""
-
-from time import perf_counter
-from typing import List, Callable, Tuple, Set, Optional
-
-# TODO: REMOVE!!!!!
-import matplotlib.pyplot as plt  # type: ignore
+from typing import List, Tuple, Set, Optional
 
 from contest.capture import GameState  # type: ignore
 from contest.capture_agents import CaptureAgent  # type: ignore
 from contest.game import Directions, GameStateData, Grid, AgentState, Configuration  # type: ignore
 from contest.layout import Layout  # type: ignore
-
-
-# TODO: REMOVE!!!!!
-class Timer:
-    """
-    A context manager and decorator for timing the execution of blocks of code or functions.
-    """
-
-    def __init__(self, name: str = 'Timer'):
-        """Initializes the Timer object with a name."""
-
-        self.name = name
-
-    def __enter__(self) -> 'Timer':
-        """Starts the timer."""
-
-        self._ts = perf_counter()
-
-        return self
-
-    def __exit__(self, *_exc) -> None:
-        """Stops the timer and prints the elapsed time."""
-
-        te = perf_counter()
-
-        # print(f'{self.name}{" " if self.name else ""}took {te - self._ts:.3f} seconds')
-
-    def __call__(self, f: Callable) -> Callable:
-        """Decorates a function to measure its execution time."""
-
-        def wrapper(*args, **kwargs) -> Callable:
-            """Wrapper function."""
-            with self:
-                return f(*args, **kwargs)
-
-        return wrapper
-
 
 INF: int = 10 ** 9
 
@@ -85,7 +43,6 @@ class GameBoard:
         self.enemy_indexes: Tuple[int, int] = (-1, -1)
         self.start = 0
 
-    @Timer('setup')
     def setup(self, gs: GameState) -> None:
         """Game board setup"""
         data: GameStateData = gs.data
@@ -109,7 +66,6 @@ class GameBoard:
 
         self.start = data.timeleft
 
-    @Timer('Floyd-Warshall')
     def floyd_warshall(self, walls: Grid) -> List[List[List[List[int]]]]:
         """Floyd-Warshall algorithm"""
         width = walls.width
@@ -177,54 +133,11 @@ class GameBoard:
 
         return d4
 
-    @Timer('tick')
     def tick(self, ix: int, gs: GameState) -> None:
         """Game board tick"""
         data: GameStateData = gs.data
         if data.timeleft < self.start:
             self.move_players(ix, gs)
-
-        # TODO: remove!
-        # self.draw_player_positions(gs)
-
-    def draw_player_positions(self, gs: GameState) -> None:
-        """Draw player positions"""
-        data: GameStateData = gs.data
-        layout: Layout = data.layout
-        walls: Grid = layout.walls
-
-        width, height = walls.width, walls.height
-        colors = ['red', 'blue', 'green', 'orange']  # one per agent
-
-        _fig, ax = plt.subplots(figsize=(width / 2, height / 2))
-
-        # Draw walls
-        for x in range(width):
-            for y in range(height):
-                if walls.data[x][y]:
-                    ax.add_patch(plt.Rectangle((x, y), 1, 1, color='black'))
-
-        # Draw agents
-        for x in range(width):
-            for y in range(height):
-                agents_here = list(self.player_positions[x][y])
-                if not agents_here:
-                    continue
-
-                # Slight offsets to avoid overlap
-                offsets = [(0, 0), (-0.2, 0.2), (0.2, 0.2), (-0.2, -0.2)]
-                for i, agent in enumerate(agents_here):
-                    dx, dy = offsets[i % 4]
-                    ax.scatter(x + 0.5 + dx, y + 0.5 + dy,
-                               c=colors[agent], s=200, edgecolors='black', zorder=5)
-
-        ax.set_xlim(0, width)
-        ax.set_ylim(0, height)
-        ax.set_xticks(range(width))
-        ax.set_yticks(range(height))
-        ax.set_aspect('equal')
-        ax.grid(True)
-        plt.show()
 
     def move_players(self, ix: int, gs: GameState) -> None:
         """Move players"""
@@ -377,11 +290,6 @@ class GameBoard:
                     if x >= mid:
                         cells.append((x, y))
 
-        # if not self.is_red:  # TODO: do something special with this!!!
-        #     cells.extend(gs.get_red_capsules())
-        # else:
-        #     cells.extend(gs.get_blue_capsules())
-
         return cells
 
     def min_player_dist_to(self, ix: int, x: int, y: int) -> int:
@@ -420,11 +328,11 @@ class GameBoard:
         min_dist = INF
         for enemy_ix in self.enemy_indexes:
             st = gs.data.agent_states[enemy_ix]
-            d = self.min_player_dist_to(enemy_ix, x, y)
-            if st.scared_timer > d:
+            if st.scared_timer > 0:
                 # Enemy is scared, cannot eat us
                 continue
 
+            d = self.min_player_dist_to(enemy_ix, x, y)
             if d < min_dist:
                 min_dist = d
 
@@ -483,7 +391,6 @@ class TiTAgent(CaptureAgent):
         self.position: Tuple[int, int] = (0, 0)
 
     # @override
-    @Timer('register_initial_state')
     def register_initial_state(self, gs: GameState) -> None:
         if self.index < 2:
             self.gameboard.setup(gs)
@@ -499,7 +406,6 @@ class TiTAgent(CaptureAgent):
         self.position = tuple(map(round, my_state.configuration.pos))  # (x,y)
 
     # @override
-    @Timer('choose_action')
     def choose_action(self, gs: GameState) -> str:
         self.gameboard.tick(self.index, gs)
 
@@ -509,16 +415,12 @@ class TiTAgent(CaptureAgent):
         my_state = agent_states[self.index]
         self.position = tuple(map(round, my_state.configuration.pos))  # (x,y)
 
-        # TODO: remove (fucked if different layout)?
-        # if data.timeleft > self.gameboard.start - 120:
-        #     return self.move_toward(gs, self.goal[0], self.goal[1])
-
-        target = self.run_home(gs)
+        target = self.eat(gs)
+        if target is not None:
+            self.gameboard.move_eaten(gs, target[0], target[1])
 
         if target is None:
-            target = self.eat(gs)
-            if target is not None:
-                self.gameboard.move_eaten(gs, target[0], target[1])
+            target = self.run_home(gs)
 
         if target is None:
             target = self.defend_capsule(gs)
@@ -539,7 +441,7 @@ class TiTAgent(CaptureAgent):
                     target = self.defend(gs)
 
         if target is None:
-            print('cry!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!')
+            # print('cry!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!')
             target = self.position
 
         return self.move_toward(gs, target[0], target[1])
@@ -613,7 +515,7 @@ class TiTAgent(CaptureAgent):
                     if my_dist_back < enemy_dist_back:
                         return safe_x, safe_y
 
-                print('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')
+                # print('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')
         else:
             if my_x < safe_x:
                 for safe_x, safe_y in safe_spots:
@@ -622,7 +524,7 @@ class TiTAgent(CaptureAgent):
                     if my_dist_back < enemy_dist_back:
                         return safe_x, safe_y
 
-                print('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')
+                # print('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')
 
         for e_ix in self.gameboard.enemy_indexes:
             enemy_state = agent_states[e_ix]
@@ -763,11 +665,13 @@ class TiTAgent(CaptureAgent):
 
             e_x, e_y = map(round, enemy_config.pos)  # (x,y)
 
-            # Only consider enemies on your half
-            if self.gameboard.is_red and e_x >= mid:
-                continue
-            if not self.gameboard.is_red and e_x < mid:
-                continue
+            st = gs.data.agent_states[enemy_ix]
+            if st.scared_timer == 0:
+                # Only consider enemies on your half
+                if self.gameboard.is_red and e_x >= mid:
+                    continue
+                if not self.gameboard.is_red and e_x < mid:
+                    continue
 
             dist = abs(my_x - e_x) + abs(my_y - e_y)
             if dist <= 1:
@@ -878,7 +782,7 @@ class TiTAgent(CaptureAgent):
         data: GameStateData = gs.data
         layout: Layout = data.layout
 
-        if data.timeleft > 150:
+        if data.timeleft > 100:
             return None
 
         my_x, my_y = self.position
@@ -900,7 +804,7 @@ class TiTAgent(CaptureAgent):
                     if my_dist_back < enemy_dist_back:
                         target = (safe_x, safe_y)
 
-                print('hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh')
+                # print('hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh')
         else:
             if my_x < safe_x + 1:
                 for safe_x, safe_y in safe_spots:
@@ -909,10 +813,10 @@ class TiTAgent(CaptureAgent):
                     if my_dist_back < enemy_dist_back:
                         target = (safe_x, safe_y)
 
-                print('hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh')
+                # print('hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh')
 
         if target is None:
-            print('hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh')
+            # print('hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh')
             return None
 
         return target
