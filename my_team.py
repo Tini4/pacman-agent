@@ -182,7 +182,9 @@ class GameBoard:
     @Timer('tick')
     def tick(self, ix: int, gs: GameState) -> None:
         """Game board tick"""
-        self.move_players(ix, gs)
+        data: GameStateData = gs.data
+        if data.timeleft < self.start:
+            self.move_players(ix, gs)
 
         # TODO: remove!
         # plt.close()
@@ -419,11 +421,28 @@ class GameBoard:
         return min_dist
 
     def min_my_dist_to(self, gs: GameState, x: int, y: int) -> int:
-        """Return the minimum distance any enemy *could* be to (x, y)"""
+        """Return the minimum distance from my agents to (x, y)"""
         data: GameStateData = gs.data
         agent_states: List[AgentState] = data.agent_states
         min_dist = INF
         for my_ix in self.my_indexes:
+            my_state = agent_states[my_ix]
+            my_x, my_y = map(round, my_state.configuration.pos)  # (x,y)
+            d = self.DISTS[my_x][my_y][x][y]
+            if d < min_dist:
+                min_dist = d
+
+        return min_dist
+
+    def min_ally_dist_to(self, gs: GameState, ix: int, x: int, y: int) -> int:
+        """Return the minimum distance from my other agents to (x, y)"""
+        data: GameStateData = gs.data
+        agent_states: List[AgentState] = data.agent_states
+        min_dist = INF
+        for my_ix in self.my_indexes:
+            if my_ix == ix:
+                continue
+
             my_state = agent_states[my_ix]
             my_x, my_y = map(round, my_state.configuration.pos)  # (x,y)
             d = self.DISTS[my_x][my_y][x][y]
@@ -545,52 +564,81 @@ class TiTAgent(CaptureAgent):
         return best_action
 
     def defend(self, gs: GameState) -> Optional[Tuple[int, int]]:
-        """
-        Determine the best tile to move toward to defend food.
-        Returns (x, y) of the target defensive position.
-        """
-        my_food_list = self.gameboard.my_food(gs)
+        """Defend my food"""
+        data: GameStateData = gs.data
+        layout: Layout = data.layout
 
-        if not my_food_list:
-            # No food left, stay put
+        my_food = self.gameboard.my_food(gs)
+        if not my_food:
             return None
 
-        best_food: List[Tuple[int, int]] = []
-        worst_risk = -INF  # risk = my distance - enemy distance
-        for f_x, f_y in my_food_list:
-            enemy_dist = self.gameboard.min_enemy_dist_to(f_x, f_y)
-            my_dist = self.gameboard.min_my_dist_to(gs, f_x, f_y)
-            # TODO? self.gameboard.min_my_dist_to(gs, f_x, f_y)
-            #       self.gameboard.DISTS[self.position[0]][self.position[1]][f_x][f_y]
-            risk = my_dist - enemy_dist  # positive if you are farther than enemy
+        my_x, my_y = self.position
 
-            if risk > worst_risk:
-                worst_risk = risk
-                best_food.clear()
+        legal = gs.get_legal_actions(self.index)
 
-            if risk == worst_risk:
-                best_food.append((f_x, f_y))
+        # Movement deltas
+        directions = {
+            Directions.NORTH: (0, 1),
+            Directions.SOUTH: (0, -1),
+            Directions.EAST: (1, 0),
+            Directions.WEST: (-1, 0),
+            Directions.STOP: (0, 0),
+        }
 
-        print(worst_risk)
+        best_action_worst_risk = INF
+        best_action_target = None
+        for direct, (d_x, d_y) in directions.items():
+            if direct not in legal:
+                continue
 
-        # self.goal = best_food[0]
-        # not critical, don't defend
-        # if worst_risk < -1: TODO?
-        #     return None
+            n_x, n_y = my_x + d_x, my_y + d_y
+            action_worst_risk = -INF
+            action_target = None
+            for f_x, f_y in my_food:
+                if self.index < 2:
+                    if self.gameboard.is_red:
+                        if f_y > (layout.height * 2) // 3 + 1:
+                            continue
+                    else:
+                        if f_y < (layout.height * 1) // 3 + 1:
+                            continue
+                else:
+                    if self.gameboard.is_red:
+                        if f_y < (layout.height * 1) // 3 + 1:
+                            continue
+                    else:
+                        if f_y > (layout.height * 2) // 3 + 1:
+                            continue
 
-        # TODO: if multiple are in danger, maybe stay put?
-        #  if not so in danger that risk is == 0 (just enough time to defend)
+                enemy_dist = self.gameboard.min_enemy_dist_to(f_x, f_y)
 
-        return min(best_food, key=lambda f: self.gameboard.min_enemy_dist_to(f[0], f[1]))
+                if (layout.height * 1) // 3 + 1 < f_y < (layout.height * 2) // 3 + 1:
+                    my_dist_after = min(self.gameboard.DISTS[n_x][n_y][f_x][f_y],
+                                        self.gameboard.min_ally_dist_to(gs, self.index, f_x, f_y))
+                else:
+                    my_dist_after = self.gameboard.DISTS[n_x][n_y][f_x][f_y]
+
+                risk = my_dist_after - enemy_dist
+                if risk > action_worst_risk:
+                    action_worst_risk = risk
+                    action_target = (n_x, n_y)
+
+            if action_worst_risk < best_action_worst_risk:
+                best_action_worst_risk = action_worst_risk
+                best_action_target = action_target
+
+        print(best_action_worst_risk)
+
+        return best_action_target
 
     def eat(self, gs: GameState) -> Optional[Tuple[int, int]]:
-        """ TODO
-        Return a to eat an enemy.
+        """
+        Return spot to eat an enemy.
         Otherwise, return None.
         """
         data: GameStateData = gs.data
         agent_states: List[AgentState] = data.agent_states
-        layout: Layout = gs.data.layout
+        layout: Layout = data.layout
         mid = layout.width // 2
         my_x, my_y = self.position
 
