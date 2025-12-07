@@ -80,13 +80,13 @@ class GameBoard:
 
     def __init__(self, is_red: bool) -> None:
         """Initializes the game board"""
+        self.is_red = is_red
+
         self.DISTS: List[List[List[List[int]]]] = []
         self.player_positions: List[List[Set[int]]] = []
         self.my_indexes: Tuple[int, int] = (-1, -1)
         self.enemy_indexes: Tuple[int, int] = (-1, -1)
         self.start = 0
-
-        self.is_red = is_red
 
     @Timer('setup')
     def setup(self, gs: GameState) -> None:
@@ -365,6 +365,33 @@ class GameBoard:
 
         return cells
 
+    def enemy_food(self, gs: GameState) -> List[Tuple[int, int]]:
+        """Return list of (x,y) food coords that lie in our half only."""
+        data: GameStateData = gs.data
+        layout: Layout = data.layout
+        food: Grid = layout.food
+
+        mid = food.width // 2
+        cells: List[Tuple[int, int]] = []
+        for x in range(food.width):
+            for y in range(food.height):
+                if not food.data[x][y]:
+                    continue
+                # If we're red, our half is left (0 ... mid-1), else right (mid..width-1)
+                if not self.is_red:
+                    if x < mid:
+                        cells.append((x, y))
+                else:
+                    if x >= mid:
+                        cells.append((x, y))
+
+        if not self.is_red:
+            cells.extend(gs.get_red_capsules())
+        else:
+            cells.extend(gs.get_blue_capsules())
+
+        return cells
+
     def min_player_dist_to(self, ix: int, x: int, y: int) -> int:
         """
         Return the minimum distance a player *could* be to (x, y)
@@ -385,10 +412,23 @@ class GameBoard:
 
     def min_enemy_dist_to(self, x: int, y: int) -> int:
         """Return the minimum distance any enemy *could* be to (x, y)"""
-
         min_dist = INF
         for enemy_ix in self.enemy_indexes:
             d = self.min_player_dist_to(enemy_ix, x, y)
+            if d < min_dist:
+                min_dist = d
+
+        return min_dist
+
+    def min_my_dist_to(self, gs: GameState, x: int, y: int) -> int:
+        """Return the minimum distance any enemy *could* be to (x, y)"""
+        data: GameStateData = gs.data
+        agent_states: List[AgentState] = data.agent_states
+        min_dist = INF
+        for my_ix in self.my_indexes:
+            my_state = agent_states[my_ix]
+            my_x, my_y = map(round, my_state.configuration.pos)  # (x,y)
+            d = self.DISTS[my_x][my_y][x][y]
             if d < min_dist:
                 min_dist = d
 
@@ -442,16 +482,19 @@ class TiTAgent(CaptureAgent):
         my_state = agent_states[self.index]
         self.position = tuple(map(round, my_state.configuration.pos))  # (x,y)
 
-        if data.timeleft > self.gameboard.start - 120:
-            return self.move_toward(gs, self.goal[0], self.goal[1])
+        # TODO
+        # if data.timeleft > self.gameboard.start - 120:
+        #     return self.move_toward(gs, self.goal[0], self.goal[1])
 
         target = self.eat(gs)
+        print(target)
         if target is not None:
             self.gameboard.eat(gs, target[0], target[1])
         else:
             target = self.defend(gs)
+            print(target)
             if target is None:
-                target = self.attack(gs)
+                target = self.position  # self.attack(gs)
 
         return self.move_toward(gs, target[0], target[1])
 
@@ -502,7 +545,7 @@ class TiTAgent(CaptureAgent):
         return best_action
 
     def defend(self, gs: GameState) -> Optional[Tuple[int, int]]:
-        """ TODO: do not defend if teammate is near enough?
+        """
         Determine the best tile to move toward to defend food.
         Returns (x, y) of the target defensive position.
         """
@@ -513,54 +556,18 @@ class TiTAgent(CaptureAgent):
             return None
 
         best_food = None
-        worst_risk = -INF  # risk = enemy distance - my distance (negative = dangerous)
+        worst_risk = -INF  # risk = my distance - enemy distance
 
-        for fx, fy in my_food_list:
-            enemy_dist = self.gameboard.min_enemy_dist_to(fx, fy)
-            my_dist = self.gameboard.min_player_dist_to(self.index, fx, fy)
+        for f_x, f_y in my_food_list:
+            enemy_dist = self.gameboard.min_enemy_dist_to(f_x, f_y)
+            my_dist = self.gameboard.min_my_dist_to(gs, f_x, f_y)
             risk = my_dist - enemy_dist  # positive if you are farther than enemy
 
-            if risk < worst_risk:
-                continue  # safer than the previous worst food
-            worst_risk = risk
-            best_food = (fx, fy)
+            if risk > worst_risk:
+                worst_risk = risk
+                best_food = (f_x, f_y)
 
-        if best_food is None:
-            # All food is safe, stay put
-            return None
-
-        # STEP 2: Find defensive tile (closest to you while still intercepting)
-        fx, fy = best_food
-        width = gs.data.layout.walls.width
-        height = gs.data.layout.walls.height
-        mid = width // 2
-
-        candidates = []
-
-        for x in range(width):
-            for y in range(height):
-                # Must be in your half
-                if self.gameboard.is_red and x >= mid:
-                    continue
-                if not self.gameboard.is_red and x < mid:
-                    continue
-
-                # Only consider tiles that let you reach food no later than enemy
-                my_d = self.gameboard.min_player_dist_to(self.index, x, y)
-                enemy_d = self.gameboard.min_enemy_dist_to(fx, fy)
-                # You can be at most as far as enemy from food
-                if self.gameboard.DISTS[x][y][fx][fy] <= enemy_d:
-                    candidates.append((x, y))
-
-        if not candidates:
-            # Fallback: just move toward the food itself
-            return best_food
-
-        # Pick the candidate closest to current position
-        cx, cy = self.position
-        best_tile = min(candidates, key=lambda t: self.gameboard.DISTS[cx][cy][t[0]][t[1]])
-
-        return best_tile
+        return best_food
 
     def eat(self, gs: GameState) -> Optional[Tuple[int, int]]:
         """ TODO
@@ -658,145 +665,3 @@ class TiTAgent(CaptureAgent):
         # Pick the closest safe food
         target = min(safe_foods, key=lambda t: self.gameboard.DISTS[my_x][my_y][t[0]][t[1]])
         return target
-
-
-class ReflexCaptureAgent(CaptureAgent):
-    """
-    A base class for reflex agents that choose score-maximizing actions
-    """
-
-    def __init__(self, index, time_for_computing=.9):
-        super().__init__(index, time_for_computing)
-        self.start = None
-
-    def register_initial_state(self, game_state):
-        self.start = game_state.get_agent_position(self.index)
-        CaptureAgent.register_initial_state(self, game_state)
-
-    def choose_action(self, game_state):
-        """
-        Picks among the actions with the highest Q(s,a).
-        """
-        actions = game_state.get_legal_actions(self.index)
-
-        # You can profile your evaluation time by uncommenting these lines
-        # start = time.time()
-        values = [self.evaluate(game_state, a) for a in actions]
-        # print 'eval time for agent %d: %.4f' % (self.index, time.time() - start)
-
-        max_value = max(values)
-        best_actions = [a for a, v in zip(actions, values) if v == max_value]
-
-        food_left = len(self.get_food(game_state).as_list())
-
-        if food_left <= 2:
-            best_dist = 9999
-            best_action = None
-            for action in actions:
-                successor = self.get_successor(game_state, action)
-                pos2 = successor.get_agent_position(self.index)
-                dist = self.get_maze_distance(self.start, pos2)
-                if dist < best_dist:
-                    best_action = action
-                    best_dist = dist
-            return best_action
-
-        return random.choice(best_actions)
-
-    def get_successor(self, game_state, action):
-        """
-        Finds the next successor which is a grid position (location tuple).
-        """
-        successor = game_state.generate_successor(self.index, action)
-        pos = successor.get_agent_state(self.index).get_position()
-        if pos != nearest_point(pos):
-            # Only half a grid position was covered
-            return successor.generate_successor(self.index, action)
-        else:
-            return successor
-
-    def evaluate(self, game_state, action):
-        """
-        Computes a linear combination of features and feature weights
-        """
-        features = self.get_features(game_state, action)
-        weights = self.get_weights(game_state, action)
-        return features * weights
-
-    def get_features(self, game_state, action):
-        """
-        Returns a counter of features for the state
-        """
-        features = util.Counter()
-        successor = self.get_successor(game_state, action)
-        features['successor_score'] = self.get_score(successor)
-        return features
-
-    def get_weights(self, game_state, action):
-        """
-        Normally, weights do not depend on the game state.
-        They can be either a counter or a dictionary.
-        """
-        return {'successor_score': 1.0}
-
-
-class OffensiveReflexAgent(ReflexCaptureAgent):
-    """
-    A reflex agent that seeks food. This is an agent
-    we give you to get an idea of what an offensive agent might look like,
-    but it is by no means the best or only way to build an offensive agent.
-    """
-
-    def get_features(self, game_state, action):
-        features = util.Counter()
-        successor = self.get_successor(game_state, action)
-        food_list = self.get_food(successor).as_list()
-        features['successor_score'] = -len(food_list)  # self.getScore(successor)
-
-        # Compute distance to the nearest food
-
-        if len(food_list) > 0:  # This should always be True, but better safe than sorry
-            my_pos = successor.get_agent_state(self.index).get_position()
-            min_distance = min([self.get_maze_distance(my_pos, food) for food in food_list])
-            features['distance_to_food'] = min_distance
-        return features
-
-    def get_weights(self, game_state, action):
-        return {'successor_score': 100, 'distance_to_food': -1}
-
-
-class DefensiveReflexAgent(ReflexCaptureAgent):
-    """
-    A reflex agent that keeps its side Pacman-free. Again,
-    this is to give you an idea of what a defensive agent
-    could be like. It is not the best or only way to make
-    such an agent.
-    """
-
-    def get_features(self, game_state, action):
-        features = util.Counter()
-        successor = self.get_successor(game_state, action)
-
-        my_state = successor.get_agent_state(self.index)
-        my_pos = my_state.get_position()
-
-        # Computes whether we're on defense (1) or offense (0)
-        features['on_defense'] = 1
-        if my_state.is_pacman: features['on_defense'] = 0
-
-        # Computes distance to invaders we can see
-        enemies = [successor.get_agent_state(i) for i in self.get_opponents(successor)]
-        invaders = [a for a in enemies if a.is_pacman and a.get_position() is not None]
-        features['num_invaders'] = len(invaders)
-        if len(invaders) > 0:
-            dists = [self.get_maze_distance(my_pos, a.get_position()) for a in invaders]
-            features['invader_distance'] = min(dists)
-
-        if action == Directions.STOP: features['stop'] = 1
-        rev = Directions.REVERSE[game_state.get_agent_state(self.index).configuration.direction]
-        if action == rev: features['reverse'] = 1
-
-        return features
-
-    def get_weights(self, game_state, action):
-        return {'num_invaders': -1000, 'on_defense': 100, 'invader_distance': -10, 'stop': -100, 'reverse': -2}
