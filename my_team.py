@@ -185,7 +185,6 @@ class GameBoard:
             self.move_players(ix, gs)
 
         # TODO: remove!
-        # plt.close()
         # self.draw_player_positions(gs)
 
     def draw_player_positions(self, gs: GameState) -> None:
@@ -357,11 +356,6 @@ class GameBoard:
                     if x >= mid:
                         cells.append((x, y))
 
-        if self.is_red:
-            cells.extend(gs.get_red_capsules())
-        else:
-            cells.extend(gs.get_blue_capsules())
-
         return cells
 
     def enemy_food(self, gs: GameState) -> List[Tuple[int, int]]:
@@ -413,6 +407,24 @@ class GameBoard:
         min_dist = INF
         for enemy_ix in self.enemy_indexes:
             d = self.min_player_dist_to(enemy_ix, x, y)
+            if d < min_dist:
+                min_dist = d
+
+        return min_dist
+
+    def min_enemy_dist_to_if_dangerous(self, gs: GameState, x: int, y: int):
+        """
+        Returns minimum enemy distance to (x, y), but ignores enemies whose scared_timer > 1.
+        This means they cannot eat us even if they reach us.
+        """
+        min_dist = INF
+        for enemy_ix in self.enemy_indexes:
+            st = gs.data.agent_states[enemy_ix]
+            d = self.min_player_dist_to(enemy_ix, x, y)
+            if st.scared_timer > d:
+                # Enemy is scared, cannot eat us
+                continue
+
             if d < min_dist:
                 min_dist = d
 
@@ -501,19 +513,23 @@ class TiTAgent(CaptureAgent):
         # if data.timeleft > self.gameboard.start - 120:
         #     return self.move_toward(gs, self.goal[0], self.goal[1])
 
-        target = self.eat(gs)
-        if target is not None:
-            self.gameboard.move_eaten(gs, target[0], target[1])
-
-        intruder = False
-        for e_ix in self.gameboard.enemy_indexes:
-            enemy_state = agent_states[e_ix]
-            if enemy_state.is_pacman:
-                intruder = True
-
-        print(intruder)
+        target = self.run_home(gs)
 
         if target is None:
+            target = self.eat(gs)
+            if target is not None:
+                self.gameboard.move_eaten(gs, target[0], target[1])
+
+        if target is None:
+            target = self.defend_capsule(gs)
+
+        if target is None:
+            intruder = False
+            for e_ix in self.gameboard.enemy_indexes:
+                enemy_state = agent_states[e_ix]
+                if enemy_state.is_pacman:
+                    intruder = True
+
             if intruder:
                 target = self.defend(gs)
             else:
@@ -578,6 +594,7 @@ class TiTAgent(CaptureAgent):
         """Defend my food"""
         data: GameStateData = gs.data
         layout: Layout = data.layout
+        agent_states: List[AgentState] = data.agent_states
 
         my_x, my_y = self.position
 
@@ -586,20 +603,44 @@ class TiTAgent(CaptureAgent):
         else:
             safe_x = layout.width // 2
 
+        safe_spots = [(safe_x, safe_y) for safe_y in range(layout.height)]
+        safe_spots.sort(key=lambda s: self.gameboard.DISTS[my_x][my_y][s[0]][s[1]])
         if self.gameboard.is_red:
             if my_x > safe_x:
-                for safe_y in range(layout.height):
+                for safe_x, safe_y in safe_spots:
                     my_dist_back = self.gameboard.DISTS[my_x][my_y][safe_x][safe_y]
                     enemy_dist_back = self.gameboard.min_enemy_dist_to(safe_x, safe_y)
                     if my_dist_back < enemy_dist_back:
                         return safe_x, safe_y
+
+                print('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')
         else:
             if my_x < safe_x:
-                for safe_y in range(layout.height):
+                for safe_x, safe_y in safe_spots:
                     my_dist_back = self.gameboard.DISTS[my_x][my_y][safe_x][safe_y]
                     enemy_dist_back = self.gameboard.min_enemy_dist_to(safe_x, safe_y)
                     if my_dist_back < enemy_dist_back:
                         return safe_x, safe_y
+
+                print('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')
+
+        for e_ix in self.gameboard.enemy_indexes:
+            enemy_state = agent_states[e_ix]
+            if not enemy_state.is_pacman:
+                continue
+
+            enemy_config: Configuration = enemy_state.configuration
+            if enemy_config is None:
+                continue
+
+            e_x, e_y = map(round, enemy_config.pos)  # (x,y)
+
+            my_dist = self.gameboard.DISTS[my_x][my_y][e_x][e_y]
+            ally_dist = self.gameboard.min_ally_dist_to(gs, self.index, e_x, e_y)
+            if my_dist > ally_dist:
+                continue
+
+            return e_x, e_y
 
         my_food = self.gameboard.my_food(gs)
         if not my_food:
@@ -626,20 +667,20 @@ class TiTAgent(CaptureAgent):
             action_worst_risk = -INF
             action_target = None
             for f_x, f_y in my_food:
-                # if self.index < 2:
-                #     if self.gameboard.is_red:
-                #         if f_y > (layout.height * 2) // 3 + 1:
-                #             continue
-                #     else:
-                #         if f_y < (layout.height * 1) // 3 + 1:
-                #             continue
-                # else:
-                #     if self.gameboard.is_red:
-                #         if f_y < (layout.height * 1) // 3 + 1:
-                #             continue
-                #     else:
-                #         if f_y > (layout.height * 2) // 3 + 1:
-                #             continue
+                if self.index < 2:
+                    if self.gameboard.is_red:
+                        if f_y > (layout.height * 2) // 3 + 1:
+                            continue
+                    else:
+                        if f_y < (layout.height * 1) // 3 + 1:
+                            continue
+                else:
+                    if self.gameboard.is_red:
+                        if f_y < (layout.height * 1) // 3 + 1:
+                            continue
+                    else:
+                        if f_y > (layout.height * 2) // 3 + 1:
+                            continue
 
                 enemy_dist = self.gameboard.min_enemy_dist_to(f_x, f_y)
 
@@ -658,9 +699,49 @@ class TiTAgent(CaptureAgent):
                 best_action_worst_risk = action_worst_risk
                 best_action_target = action_target
 
-        print(best_action_worst_risk)
-
         return best_action_target
+
+    def defend_capsule(self, gs: GameState) -> Optional[Tuple[int, int]]:
+        """Defend my capsule"""
+        my_x, my_y = self.position
+
+        if self.gameboard.is_red:
+            capsules = gs.get_red_capsules()
+        else:
+            capsules = gs.get_blue_capsules()
+
+        if not capsules:
+            return None
+
+        best_capsule = None
+        worst_risk = -INF
+        for cap_x, cap_y in capsules:
+            # Distance from my agents
+            my_dist = self.gameboard.min_my_dist_to(gs, cap_x, cap_y)
+
+            # Distance from the closest enemy
+            enemy_dist = self.gameboard.min_enemy_dist_to(cap_x, cap_y)
+
+            # Risk = enemy closer than us
+            risk = my_dist - enemy_dist
+
+            # Prefer capsule that is most threatened (lowest or negative risk)
+            if risk > worst_risk:
+                worst_risk = risk
+                best_capsule = (cap_x, cap_y)
+
+        if best_capsule is None:
+            return None
+
+        if worst_risk < -1:
+            return None
+
+        my_dist = self.gameboard.DISTS[my_x][my_y][best_capsule[0]][best_capsule[1]]
+        ally_dist = self.gameboard.min_ally_dist_to(gs, self.index, best_capsule[0], best_capsule[1])
+        if my_dist > ally_dist:
+            return None
+
+        return best_capsule
 
     def eat(self, gs: GameState) -> Optional[Tuple[int, int]]:
         """
@@ -703,7 +784,21 @@ class TiTAgent(CaptureAgent):
         """
         data: GameStateData = gs.data
         layout: Layout = data.layout
+
         my_x, my_y = self.position
+
+        if not self.gameboard.is_red:
+            capsules = gs.get_red_capsules()
+        else:
+            capsules = gs.get_blue_capsules()
+
+        for cap_x, cap_y in capsules:
+            enemy_dist = self.gameboard.min_enemy_dist_to_if_dangerous(gs, cap_x, cap_y)
+            my_dist = self.gameboard.DISTS[my_x][my_y][cap_x][cap_y]
+
+            if my_dist <= enemy_dist:
+                return cap_x, cap_y
+
         enemy_food = self.gameboard.enemy_food(gs)
 
         if not enemy_food:
@@ -728,6 +823,9 @@ class TiTAgent(CaptureAgent):
 
             eat_food.append((f_x, f_y))
 
+        if not eat_food:
+            return None
+
         f_x, f_y = min(eat_food, key=lambda f: self.gameboard.DISTS[my_x][my_y][f[0]][f[1]])
 
         test = self.move_toward(gs, f_x, f_y)
@@ -748,7 +846,7 @@ class TiTAgent(CaptureAgent):
             if my_x >= layout.width // 2:
                 return f_x, f_y
 
-        d = self.gameboard.min_enemy_dist_to(my_x, my_y)
+        d = self.gameboard.min_enemy_dist_to_if_dangerous(gs, my_x, my_y)
 
         if d <= 1:
             return None
@@ -764,8 +862,8 @@ class TiTAgent(CaptureAgent):
 
         safe_return = False
         for safe_x, safe_y in safe_spots:
-            my_dist_back = self.gameboard.DISTS[my_x][my_y][safe_x][safe_y]
-            enemy_dist_back = self.gameboard.min_enemy_dist_to(safe_x, safe_y)
+            my_dist_back = self.gameboard.DISTS[my_x][my_y][safe_x][safe_y] + 2
+            enemy_dist_back = self.gameboard.min_enemy_dist_to_if_dangerous(gs, safe_x, safe_y)
             if my_dist_back < enemy_dist_back:
                 safe_return = True
                 break
@@ -775,4 +873,46 @@ class TiTAgent(CaptureAgent):
 
         return f_x, f_y
 
-        # TODO: capsule!
+    def run_home(self, gs: GameState) -> Optional[Tuple[int, int]]:
+        """At the end, run home"""
+        data: GameStateData = gs.data
+        layout: Layout = data.layout
+
+        if data.timeleft > 150:
+            return None
+
+        my_x, my_y = self.position
+
+        if self.gameboard.is_red:
+            safe_x = layout.width // 2 - 1
+        else:
+            safe_x = layout.width // 2
+
+        safe_spots = [(safe_x, safe_y) for safe_y in range(layout.height)]
+        # safe_spots.sort(key=lambda s: self.gameboard.DISTS[my_x][my_y][s[0]][s[1]])
+
+        target = None
+        if self.gameboard.is_red:
+            if my_x > safe_x - 1:
+                for safe_x, safe_y in safe_spots:
+                    my_dist_back = self.gameboard.DISTS[my_x][my_y][safe_x][safe_y]
+                    enemy_dist_back = self.gameboard.min_enemy_dist_to_if_dangerous(gs, safe_x, safe_y)
+                    if my_dist_back < enemy_dist_back:
+                        target = (safe_x, safe_y)
+
+                print('hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh')
+        else:
+            if my_x < safe_x + 1:
+                for safe_x, safe_y in safe_spots:
+                    my_dist_back = self.gameboard.DISTS[my_x][my_y][safe_x][safe_y]
+                    enemy_dist_back = self.gameboard.min_enemy_dist_to_if_dangerous(gs, safe_x, safe_y)
+                    if my_dist_back < enemy_dist_back:
+                        target = (safe_x, safe_y)
+
+                print('hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh')
+
+        if target is None:
+            print('hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh')
+            return None
+
+        return target
