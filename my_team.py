@@ -3,7 +3,7 @@
 
 import random
 from time import perf_counter
-from typing import List, Callable, Tuple, Set
+from typing import List, Callable, Tuple, Set, Optional
 
 # TODO: REMOVE!!!!!
 import matplotlib.pyplot as plt  # type: ignore
@@ -16,6 +16,7 @@ from contest.layout import Layout  # type: ignore
 from contest.util import nearest_point  # type: ignore
 
 
+# TODO: REMOVE!!!!!
 class Timer:
     """
     A context manager and decorator for timing the execution of blocks of code or functions.
@@ -51,6 +52,9 @@ class Timer:
         return wrapper
 
 
+INF: int = 10 ** 9
+
+
 def create_team(first_index: int, second_index: int, is_red: bool, **_kwargs) -> List[CaptureAgent]:
     """
     This function should return a list of two agents that will form the
@@ -80,6 +84,7 @@ class GameBoard:
         self.player_positions: List[List[Set[int]]] = []
         self.my_indexes: Tuple[int, int] = (-1, -1)
         self.enemy_indexes: Tuple[int, int] = (-1, -1)
+        self.start = 0
 
         self.is_red = is_red
 
@@ -105,6 +110,8 @@ class GameBoard:
             p = agent_states[i].start.pos
             self.player_positions[p[0]][p[1]].add(i)
 
+        self.start = data.timeleft
+
     @Timer('Floyd-Warshall')
     def floyd_warshall(self, walls: Grid) -> List[List[List[List[int]]]]:
         """Floyd-Warshall algorithm"""
@@ -113,7 +120,6 @@ class GameBoard:
         grid = walls.data
 
         N: int = width * height
-        INF: int = 10 ** 9
 
         def idx(_x: int, _y: int) -> int:
             """Helper to translate coordinates to linear index"""
@@ -155,13 +161,6 @@ class GameBoard:
                     if alt < di[j]:
                         di[j] = alt
 
-        # Replace INF with -1
-        for i in range(N):
-            row = dist[i]
-            for j in range(N):
-                if row[j] == INF:
-                    row[j] = -1
-
         # ---------------------------------------
         # STEP 3: Convert N×N → 4-D distance grid
         # ---------------------------------------
@@ -185,6 +184,8 @@ class GameBoard:
     def tick(self, ix: int, gs: GameState) -> None:
         """Game board tick"""
         self.move_players(ix, gs)
+
+        # self.draw_player_positions(gs)
 
     def draw_player_positions(self, gs: GameState) -> None:
         """Draw player positions"""
@@ -337,12 +338,82 @@ class GameBoard:
         #     If enemy eats food, do we know where it is?
         #     Also if enemy eats capsule?
 
+    def my_food(self, gs: GameState) -> List[Tuple[int, int]]:
+        """Return list of (x,y) food coords that lie in our half only."""
+        data: GameStateData = gs.data
+        layout: Layout = data.layout
+        food: Grid = layout.food
+
+        mid = food.width // 2
+        cells: List[Tuple[int, int]] = []
+        for x in range(food.width):
+            for y in range(food.height):
+                if not food.data[x][y]:
+                    continue
+                # If we're red, our half is left (0 ... mid-1), else right (mid..width-1)
+                if self.is_red:
+                    if x < mid:
+                        cells.append((x, y))
+                else:
+                    if x >= mid:
+                        cells.append((x, y))
+
+        if self.is_red:
+            cells.extend(gs.get_red_capsules())
+        else:
+            cells.extend(gs.get_blue_capsules())
+
+        return cells
+
+    def min_player_dist_to(self, ix: int, x: int, y: int) -> int:
+        """
+        Return the minimum distance a player *could* be to (x, y)
+        given current uncertainty in self.player_positions.
+        If a player might be in multiple squares, we take min.
+        If unreachable, returns a large number.
+        """
+        min_dist = INF
+        # For each possible position where player may be:
+        for p_x in range(len(self.player_positions)):
+            for p_y in range(len(self.player_positions[0])):
+                if ix in self.player_positions[p_x][p_y]:
+                    d = self.DISTS[p_x][p_y][x][y]
+                    if d < min_dist:
+                        min_dist = d
+
+        return min_dist
+
+    def min_enemy_dist_to(self, x: int, y: int) -> int:
+        """Return the minimum distance any enemy *could* be to (x, y)"""
+
+        min_dist = INF
+        for enemy_ix in self.enemy_indexes:
+            d = self.min_player_dist_to(enemy_ix, x, y)
+            if d < min_dist:
+                min_dist = d
+
+        return min_dist
+
+    def eat(self, gs: GameState, e_x: int, e_y: int) -> None:
+        """Remove enemy agent and respawn him"""
+        data: GameStateData = gs.data
+        agent_states: List[AgentState] = data.agent_states
+        eaten = self.player_positions[e_x][e_y].intersection(set(self.enemy_indexes))
+        for e_ix in eaten:
+            for x in range(len(self.player_positions)):
+                for y in range(len(self.player_positions[x])):
+                    self.player_positions[x][y].discard(e_ix)
+            p = agent_states[e_ix].start.pos
+            self.player_positions[p[0]][p[1]].add(e_ix)
+
 
 class TiTAgent(CaptureAgent):
     def __init__(self, index: int, gb: GameBoard) -> None:
         super().__init__(index, .9)
 
         self.gameboard: GameBoard = gb
+        self.goal: Tuple[int, int] = (0, 0)
+        self.position: Tuple[int, int] = (0, 0)
 
     # @override
     @Timer('register_initial_state')
@@ -350,7 +421,15 @@ class TiTAgent(CaptureAgent):
         if self.index < 2:
             self.gameboard.setup(gs)
 
-        # TODO A*
+            self.goal = (20, 9)
+        else:
+            self.goal = (20, 2)
+
+        data: GameStateData = gs.data
+        agent_states: List[AgentState] = data.agent_states
+
+        my_state = agent_states[self.index]
+        self.position = tuple(map(round, my_state.configuration.pos))  # (x,y)
 
     # @override
     @Timer('choose_action')
@@ -360,10 +439,225 @@ class TiTAgent(CaptureAgent):
         data: GameStateData = gs.data
         agent_states: List[AgentState] = data.agent_states
 
-        for as_ in agent_states:
-            print(vars(as_))
+        my_state = agent_states[self.index]
+        self.position = tuple(map(round, my_state.configuration.pos))  # (x,y)
 
-        return Directions.STOP
+        if data.timeleft > self.gameboard.start - 120:
+            return self.move_toward(gs, self.goal[0], self.goal[1])
+
+        target = self.eat(gs)
+        if target is not None:
+            self.gameboard.eat(gs, target[0], target[1])
+        else:
+            target = self.defend(gs)
+            if target is None:
+                target = self.attack(gs)
+
+        return self.move_toward(gs, target[0], target[1])
+
+    def move_toward(self, gs: GameState, t_x: int, t_y: int) -> str:
+        """
+        Return the best single action to move toward (tx, ty),
+        using the Floyd–Warshall precomputed DISTS.
+        """
+
+        # get current position
+        my_x, my_y = self.position
+
+        # If already there
+        if (my_x, my_y) == (t_x, t_y):
+            return Directions.STOP
+
+        # If target is unreachable
+        if self.gameboard.DISTS[my_x][my_y][t_x][t_y] >= INF:
+            return Directions.STOP
+
+        # Try each possible move
+        best_action = Directions.STOP
+        best_dist = INF
+
+        legal = gs.get_legal_actions(self.index)
+
+        # Movement deltas
+        directions = {
+            Directions.NORTH: (0, 1),
+            Directions.SOUTH: (0, -1),
+            Directions.EAST: (1, 0),
+            Directions.WEST: (-1, 0),
+        }
+
+        for direct, (d_x, d_y) in directions.items():
+            if direct not in legal:
+                continue
+
+            n_x, n_y = my_x + d_x, my_y + d_y
+
+            # Distance from neighbor toward target
+            dist = self.gameboard.DISTS[n_x][n_y][t_x][t_y]
+
+            if dist < best_dist:
+                best_dist = dist
+                best_action = direct
+
+        return best_action
+
+    def defend(self, gs: GameState) -> Optional[Tuple[int, int]]:
+        """ TODO: do not defend if teammate is near enough?
+        Determine the best tile to move toward to defend food.
+        Returns (x, y) of the target defensive position.
+        """
+        my_food_list = self.gameboard.my_food(gs)
+
+        if not my_food_list:
+            # No food left, stay put
+            return None
+
+        best_food = None
+        worst_risk = -INF  # risk = enemy distance - my distance (negative = dangerous)
+
+        for fx, fy in my_food_list:
+            enemy_dist = self.gameboard.min_enemy_dist_to(fx, fy)
+            my_dist = self.gameboard.min_player_dist_to(self.index, fx, fy)
+            risk = my_dist - enemy_dist  # positive if you are farther than enemy
+
+            if risk < worst_risk:
+                continue  # safer than the previous worst food
+            worst_risk = risk
+            best_food = (fx, fy)
+
+        if best_food is None:
+            # All food is safe, stay put
+            return None
+
+        # STEP 2: Find defensive tile (closest to you while still intercepting)
+        fx, fy = best_food
+        width = gs.data.layout.walls.width
+        height = gs.data.layout.walls.height
+        mid = width // 2
+
+        candidates = []
+
+        for x in range(width):
+            for y in range(height):
+                # Must be in your half
+                if self.gameboard.is_red and x >= mid:
+                    continue
+                if not self.gameboard.is_red and x < mid:
+                    continue
+
+                # Only consider tiles that let you reach food no later than enemy
+                my_d = self.gameboard.min_player_dist_to(self.index, x, y)
+                enemy_d = self.gameboard.min_enemy_dist_to(fx, fy)
+                # You can be at most as far as enemy from food
+                if self.gameboard.DISTS[x][y][fx][fy] <= enemy_d:
+                    candidates.append((x, y))
+
+        if not candidates:
+            # Fallback: just move toward the food itself
+            return best_food
+
+        # Pick the candidate closest to current position
+        cx, cy = self.position
+        best_tile = min(candidates, key=lambda t: self.gameboard.DISTS[cx][cy][t[0]][t[1]])
+
+        return best_tile
+
+    def eat(self, gs: GameState) -> Optional[Tuple[int, int]]:
+        """ TODO
+        Return a tile to attack an enemy if one is nearby on your half.
+        Otherwise, return None.
+        """
+        data: GameStateData = gs.data
+        agent_states: List[AgentState] = data.agent_states
+
+        walls: Grid = gs.data.layout.walls
+        width, height = walls.width, walls.height
+        mid = width // 2
+        my_x, my_y = self.position
+
+        # Check all enemy positions
+        for enemy_ix in self.gameboard.enemy_indexes:
+            enemy_state = agent_states[enemy_ix]
+            enemy_config: Configuration = enemy_state.configuration
+            if enemy_config is None:
+                continue
+
+            e_x, e_y = map(round, enemy_config.pos)  # (x,y)
+
+            # Only consider enemies on your half
+            if self.gameboard.is_red and e_x >= mid:
+                continue
+            if not self.gameboard.is_red and e_x < mid:
+                continue
+
+            dist = abs(my_x - e_x) + abs(my_y - e_y)
+            if dist <= 1:
+                return e_x, e_y
+
+        # No nearby enemy, no attack
+        return None
+
+    def attack(self, gs: GameState) -> Tuple[int, int]:
+        """
+        Return a food tile to attack if it's safe: the agent can reach the food
+        and return to its home half without being intercepted by enemies.
+        Returns the target food tile (x, y), or None if no safe attack exists.
+        """
+        my_x, my_y = self.position
+        width = gs.data.layout.walls.width
+        mid = width // 2
+        my_food_list = gs.data.layout.food
+
+        # Determine home half x-range
+        if self.gameboard.is_red:
+            home_x_range = range(0, mid)
+        else:
+            home_x_range = range(mid, width)
+
+        # Candidate foods on enemy half
+        enemy_food = [
+            (x, y) for x in range(my_food_list.width)
+            for y in range(my_food_list.height)
+            if my_food_list.data[x][y] and (x not in home_x_range)
+        ]
+
+        safe_foods = []
+
+        for fx, fy in enemy_food:
+            # Distance to food
+            my_dist_to_food = self.gameboard.DISTS[my_x][my_y][fx][fy]
+
+            # Distance from enemies to food
+            enemy_dist_to_food = self.gameboard.min_enemy_dist_to(fx, fy)
+
+            if my_dist_to_food >= enemy_dist_to_food:
+                # Can't reach food before enemy → unsafe
+                continue
+
+            # Check if path back to home half is safe
+            # We'll consider all tiles in home half reachable from food
+            safe_return = False
+            for hx in home_x_range:
+                for hy in range(gs.data.layout.walls.height):
+                    my_dist_back = self.gameboard.DISTS[fx][fy][hx][hy]
+                    enemy_dist_back = self.gameboard.min_enemy_dist_to(hx, hy)
+                    # Only safe if we reach home tile before any enemy
+                    if my_dist_back < enemy_dist_back:
+                        safe_return = True
+                        break
+                if safe_return:
+                    break
+
+            if safe_return:
+                safe_foods.append((fx, fy))
+
+        if not safe_foods:
+            # No safe attack available
+            return my_x, my_y
+
+        # Pick the closest safe food
+        target = min(safe_foods, key=lambda t: self.gameboard.DISTS[my_x][my_y][t[0]][t[1]])
+        return target
 
 
 class ReflexCaptureAgent(CaptureAgent):
